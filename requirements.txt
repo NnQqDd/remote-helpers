@@ -1,2 +1,4 @@
-fusepy
 gitignore-parser
+fusepy
+fastapi
+uvicorn[standard]

@@ -1,20 +1,29 @@
 # remote-control-helpers
 
-Two scripts for exposing a directory over HTTP and mounting it locally as a
+Scripts for exposing a directory over HTTP and mounting it locally as a
 read-only filesystem.
 
-- `static_host.py` — HTTP server with HTML listings, Range reads, optional token, gitignore-style hides
-- `httpfs.py` — FUSE client that mounts that HTTP tree
+- `static_host.py` — stdlib HTTP server (HTML listings, Range, optional token, gitignore hides)
+- `fast_host.py` — same behavior as `static_host.py`, FastAPI + **reload always on**
+- `http_fs.py` — FUSE client that mounts that HTTP tree
 
-Listings and file sizes are cached in memory. File bodies are fetched on read.
+`http_fs.py` caches listings and file sizes in memory. File bodies are fetched on read.
 
 ## Install
+
+Minimum (`static_host.py` + `http_fs.py`):
+
+```bash
+pip install -r min_requirements.txt
+```
+
+Everything, including `fast_host.py`:
 
 ```bash
 pip install -r requirements.txt
 ```
 
-`httpfs.py` also needs **libfuse** (Linux or macOS). It does not run on native Windows.
+`http_fs.py` also needs **libfuse** (Linux or macOS). It does not run on native Windows.
 
 ```bash
 # Debian/Ubuntu
@@ -26,11 +35,19 @@ brew install macfuse
 
 ## static_host.py
 
-Serve a directory (HTML index, HTTP Range, optional auth):
-
 ```bash
 python static_host.py /data --port 8888 --host 0.0.0.0 --token secret --ignorefiles .gitignore
 ```
+
+## fast_host.py
+
+Equivalent to `static_host.py`, but uvicorn **always** starts with `reload=True`.
+
+```bash
+python fast_host.py /data --port 8888 --host 0.0.0.0 --token secret --ignorefiles .gitignore
+```
+
+CLI flags are the same as `static_host.py`. Code changes under this directory restart the server.
 
 | Flag | Default | Meaning |
 |---|---|---|
@@ -49,28 +66,28 @@ If `--token` is set, send it as one of:
 - `X-Token: secret`
 - `?token=secret`
 
-The server speaks Range (`206 Partial Content`, `Accept-Ranges: bytes`).
+Both servers speak Range (`206 Partial Content`, `Accept-Ranges: bytes`).
 
-## httpfs.py
+## http_fs.py
 
-Mount a browsable HTTP directory (Apache/nginx autoindex, Python `http.server`, or `static_host.py`):
+Mount a browsable HTTP directory (Apache/nginx autoindex, `static_host.py`, or `fast_host.py`):
 
 ```bash
 mkdir -p ~/httpmnt
-python httpfs.py http://server:8888/ ~/httpmnt
+python http_fs.py http://server:8888/ ~/httpmnt
 ls ~/httpmnt
 fusermount3 -u ~/httpmnt
 ```
 
-With a token from `static_host.py`:
+With a token:
 
 ```bash
-python httpfs.py http://secret@server:8888/ ~/httpmnt
+python http_fs.py http://secret@server:8888/ ~/httpmnt
 ```
 
 Read-only. Writes are rejected.
 
-On each `read()`, httpfs sends `Range`. If the server returns `206`, only that span is used. If the server ignores Range and returns `200`, httpfs skips the first N bytes on the stream, takes the requested size, and closes the connection. Without Range, a read at offset N still has to skip N bytes on the wire.
+On each `read()`, http_fs sends `Range`. If the server returns `206`, only that span is used. If the server ignores Range and returns `200`, http_fs skips the first N bytes on the stream, takes the requested size, and closes the connection. Without Range, a read at offset N still has to skip N bytes on the wire.
 
 Check Range support:
 
@@ -82,17 +99,19 @@ curl -sI -H "Range: bytes=0-0" http://server:8888/file.txt
 
 ## Together
 
-Remote:
+Remote (pick one):
 
 ```bash
 python static_host.py /some/real/data --token secret --ignorefiles .gitignore
+# or
+python fast_host.py /some/real/data --token secret --ignorefiles .gitignore
 ```
 
 Local:
 
 ```bash
 mkdir -p ~/httpmnt
-python httpfs.py http://secret@server:8888/ ~/httpmnt
+python http_fs.py http://secret@server:8888/ ~/httpmnt
 ```
 
 Unmount: `fusermount3 -u ~/httpmnt` (Linux) or `umount ~/httpmnt` (macOS).
