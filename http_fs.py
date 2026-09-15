@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 
 import argparse
+import base64
 import errno
 import html.parser
 import os
@@ -31,6 +32,21 @@ class DirectoryParser(html.parser.HTMLParser):
 
 class HTTPFileSystem(Operations):
     def __init__(self, base_url):
+        parsed = urllib.parse.urlparse(base_url)
+        self._auth_header = None
+        if parsed.username is not None or parsed.password:
+            user = urllib.parse.unquote(parsed.username or "")
+            password = urllib.parse.unquote(parsed.password or "")
+            credential = base64.b64encode(
+                f"{user}:{password}".encode()
+            ).decode("ascii")
+            self._auth_header = f"Basic {credential}"
+            host = parsed.hostname or ""
+            if ":" in host and not host.startswith("["):
+                host = f"[{host}]"
+            netloc = f"{host}:{parsed.port}" if parsed.port else host
+            base_url = urllib.parse.urlunparse(parsed._replace(netloc=netloc))
+
         if not base_url.endswith("/"):
             base_url += "/"
 
@@ -51,6 +67,18 @@ class HTTPFileSystem(Operations):
             url += "/"
         return url
 
+    def _urlopen(self, url, headers=None, method=None):
+        kwargs = {}
+        if method is not None:
+            kwargs["method"] = method
+        request = urllib.request.Request(url, **kwargs)
+        if headers:
+            for key, value in headers.items():
+                request.add_header(key, value)
+        if self._auth_header:
+            request.add_header("Authorization", self._auth_header)
+        return urllib.request.urlopen(request)
+
     def _list_dir(self, path):
         if path in self.dir_cache:
             return self.dir_cache[path]
@@ -58,7 +86,7 @@ class HTTPFileSystem(Operations):
         url = self._dir_url(path)
 
         try:
-            with urllib.request.urlopen(url) as response:
+            with self._urlopen(url) as response:
                 body = response.read()
                 current_url = response.url
         except Exception as exc:
@@ -206,14 +234,12 @@ class HTTPFileSystem(Operations):
             return b""
 
         url = self._http_url(path)
-        request = urllib.request.Request(url)
-        request.add_header(
-            "Range",
-            f"bytes={offset}-{offset + size - 1}",
-        )
 
         try:
-            with urllib.request.urlopen(request) as response:
+            with self._urlopen(
+                url,
+                headers={"Range": f"bytes={offset}-{offset + size - 1}"},
+            ) as response:
                 if response.status == 206:
                     return response.read()
                 return self._read_from_start(response, offset, size)
@@ -258,8 +284,7 @@ class HTTPFileSystem(Operations):
         url = self._http_url(path)
 
         try:
-            request = urllib.request.Request(url, method="HEAD")
-            with urllib.request.urlopen(request) as response:
+            with self._urlopen(url, method="HEAD") as response:
                 content_length = response.headers.get("Content-Length")
 
             if content_length is not None:
@@ -271,7 +296,7 @@ class HTTPFileSystem(Operations):
             pass
 
         try:
-            with urllib.request.urlopen(url) as response:
+            with self._urlopen(url) as response:
                 data = response.read()
 
             size = len(data)
