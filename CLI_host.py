@@ -5,13 +5,87 @@ import asyncio
 import base64
 import hmac
 import html
+import ipaddress
 import os
 import urllib.parse
+import warnings
 
 import uvicorn
 from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import HTMLResponse, PlainTextResponse, Response
 from starlette.websockets import WebSocketState
+
+
+def _normalize_ip(value):
+    text = (value or "").strip()
+    if text.startswith("[") and text.endswith("]"):
+        text = text[1:-1]
+    addr = ipaddress.ip_address(text)
+    if isinstance(addr, ipaddress.IPv6Address) and addr.ipv4_mapped:
+        return str(addr.ipv4_mapped)
+    return str(addr)
+
+
+def _load_ip_file(path):
+    ips = set()
+    with open(path, encoding="utf-8") as handle:
+        for lineno, raw in enumerate(handle, start=1):
+            line = raw.strip()
+            if not line or line.startswith("#"):
+                continue
+            try:
+                ips.add(_normalize_ip(line))
+            except ValueError as exc:
+                raise SystemExit(
+                    f"{path}:{lineno}: invalid IP {line!r}: {exc}"
+                )
+    return ips
+
+
+def _load_ip_lists(whitelist_path, blacklist_path):
+    whitelist = None
+    if whitelist_path is not None:
+        whitelist = _load_ip_file(whitelist_path)
+    blacklist = set()
+    if blacklist_path is not None:
+        blacklist = _load_ip_file(blacklist_path)
+    if whitelist is not None:
+        overlap = sorted(whitelist & blacklist)
+        if overlap:
+            message = (
+                "IPs in both --whitelist and --blacklist; "
+                "blacklist takes precedence: " + ", ".join(overlap)
+            )
+            warnings.warn(message, stacklevel=2)
+            print("Warning:", message, flush=True)
+    return whitelist, blacklist
+
+
+def _peer_ip(host):
+    if not host:
+        return None
+    try:
+        return _normalize_ip(host)
+    except ValueError:
+        return host.strip()
+
+
+def _ip_allowed(ip, whitelist, blacklist):
+    if ip is None:
+        return False
+    if ip in blacklist:
+        return False
+    if whitelist is not None:
+        return ip in whitelist
+    return True
+
+
+def _forbidden():
+    return Response(
+        content=b"Forbidden\n",
+        status_code=403,
+        headers={"Content-Type": "text/plain; charset=utf-8"},
+    )
 
 
 def _tokens_match(got, expected):
@@ -133,12 +207,28 @@ async def _stream_command(websocket, command):
         raise
 
 
-def create_app(token=None):
+def create_app(token=None, whitelist=None, blacklist=None):
+    if blacklist is None:
+        blacklist = set()
     app = FastAPI(docs_url=None, redoc_url=None, openapi_url=None)
+
+    def _request_ip(request):
+        host = request.client.host if request.client else None
+        return _peer_ip(host)
+
+    @app.middleware("http")
+    async def ip_gate(request: Request, call_next):
+        if not _ip_allowed(_request_ip(request), whitelist, blacklist):
+            return _forbidden()
+        return await call_next(request)
 
     @app.websocket("/")
     async def cli(websocket: WebSocket):
         await websocket.accept()
+        ws_ip = _peer_ip(websocket.client.host if websocket.client else None)
+        if not _ip_allowed(ws_ip, whitelist, blacklist):
+            await websocket.close(code=1008)
+            return
         if not _authorized(websocket.query_params, websocket.headers, token):
             await websocket.close(code=1008)
             return
@@ -167,6 +257,25 @@ def create_app(token=None):
             text,
             headers={"X-Exit-Code": str(code if code is not None else "")},
         )
+
+    @app.get("/ips")
+    async def list_ips(request: Request):
+        if not _authorized(request.query_params, request.headers, token):
+            return _unauthorized()
+        lines = ["whitelist:"]
+        if whitelist is None:
+            lines.append("(none)")
+        elif not whitelist:
+            lines.append("(empty)")
+        else:
+            lines.extend(sorted(whitelist))
+        lines.append("blacklist:")
+        if not blacklist:
+            lines.append("(empty)")
+        else:
+            lines.extend(sorted(blacklist))
+        lines.append("")
+        return PlainTextResponse("\n".join(lines))
 
     @app.get("/run")
     async def run_get(request: Request):
@@ -226,15 +335,31 @@ def main():
         default=None,
         help="Shared secret via Basic user/password, Bearer, X-Token, or ?token=",
     )
+    parser.add_argument(
+        "--whitelist",
+        default=None,
+        help="file of allowed IPs, one per line; if set, only these IPs may connect",
+    )
+    parser.add_argument(
+        "--blacklist",
+        default=None,
+        help="file of denied IPs, one per line; takes precedence over --whitelist",
+    )
     args = parser.parse_args()
+    if args.whitelist and not os.path.isfile(args.whitelist):
+        raise SystemExit(f"Whitelist file does not exist: {args.whitelist}")
+    if args.blacklist and not os.path.isfile(args.blacklist):
+        raise SystemExit(f"Blacklist file does not exist: {args.blacklist}")
+    whitelist, blacklist = _load_ip_lists(args.whitelist, args.blacklist)
     print(
         f"CLI ws://{args.host}:{args.port}/  "
         f"http://{args.host}:{args.port}/run  "
-        f"http://{args.host}:{args.port}/form",
+        f"http://{args.host}:{args.port}/form  "
+        f"http://{args.host}:{args.port}/ips",
         flush=True,
     )
     uvicorn.run(
-        create_app(args.token),
+        create_app(args.token, whitelist=whitelist, blacklist=blacklist),
         host=args.host,
         port=args.port,
     )

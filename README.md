@@ -126,16 +126,18 @@ Unmount: `fusermount3 -u ~/httpmnt` (Linux) or `umount ~/httpmnt` (macOS).
 
 ## CLI_host.py
 
-Three APIs. Commands run on the **server OS**.
+Four APIs. Commands run on the **server OS**.
 
 | API | Path | Input | Output |
 |---|---|---|---|
 | WebSocket | `ws://host:8888/` | one text frame = command | streamed stdout/stderr text frames; socket closes when done |
 | HTTP | `http://host:8888/run` | GET `cmd=` or POST raw body | `text/plain` full output; `X-Exit-Code` header |
 | Form | `http://host:8888/form` | HTML form or POST `cmd=` | HTML page with the output |
+| IPs | `http://host:8888/ips` | none | `text/plain` whitelist then blacklist |
 
 ```bash
-python CLI_host.py --port 8888 --host 0.0.0.0 --token secret
+python CLI_host.py --port 8888 --host 0.0.0.0 --token secret \
+  --whitelist allow.txt --blacklist deny.txt
 ```
 
 | Flag | Default | Meaning |
@@ -143,6 +145,14 @@ python CLI_host.py --port 8888 --host 0.0.0.0 --token secret
 | `--port` | `8888` | Listen port |
 | `--host` | `0.0.0.0` | Bind address |
 | `--token` | none | `?token=`, Bearer, Basic, `X-Token`, or form field `token` |
+| `--whitelist` | none | file, one IP per line; if set, only these IPs may use the APIs |
+| `--blacklist` | none | file, one IP per line; always denied. If an IP is in both files, a warning is printed and **blacklist wins** |
+
+### IPs `/ips`
+
+```bash
+curl "http://127.0.0.1:8888/ips?token=secret"
+```
 
 ### HTTP `/run` (curl)
 
