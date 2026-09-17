@@ -1,9 +1,8 @@
 # ACCESS
 
 - `CLI_host.py` is running on the target server, allowing you to send text commands and receive responses from this session.
-- It has already been started on the target server with `python CLI_host.py --port 8333 --token 1234`.
-- Public URL: `http://duynq.103.164.226.13.sslip.io`, add `:8333` at the end if necessary.
-- To upload or download files, use `scp` with `duyn@103.164.226.13`.
+- Public URL: `http://duynq.<IPv4>.sslip.io:<port>`, access using token `<token>`.
+- To upload or download files, use `scp` with `duyn@<IPv4>`.
 - If the public URL, token, or `scp` connection does not work, stop immediately and report the issue to me.
 
 
